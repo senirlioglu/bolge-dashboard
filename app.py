@@ -682,7 +682,13 @@ if uploaded_file is not None:
                         c2.metric("🔒 İç Hırs.", row['İç Hırs.'])
                         c3.metric("📉 Kayıp", f"%{row['Kayıp %']:.1f}")
                         c4.metric("💵 Net Fark", f"{row['Net Fark']:,.0f}")
-                        c5.metric("💰 10TL", f"+{row['10TL Adet']:.0f}" if row['10TL Adet'] > 0 else "0")
+                        # 10TL adet ve tutar
+                        if row['10TL Adet'] > 0:
+                            c5.metric("💰 10TL", f"+{row['10TL Adet']:.0f}", f"{row['10TL Tutar']:,.0f}₺")
+                        elif row['10TL Adet'] < 0:
+                            c5.metric("💰 10TL", f"{row['10TL Adet']:.0f}", f"{row['10TL Tutar']:,.0f}₺")
+                        else:
+                            c5.metric("💰 10TL", "0")
                         
                         if row['Nedenler'] != "-":
                             st.caption(f"**Nedenler:** {row['Nedenler']}")
@@ -759,11 +765,12 @@ if uploaded_file is not None:
                 st.info(f"📊 {len(filtered_df)} mağaza gösteriliyor")
                 
                 show_cols = ['Mağaza Kodu', 'Mağaza Adı', 'SM', 'BS', 'Satış', 'Net Fark', 'Kayıp %', 
-                            'Sigara', 'İç Hırs.', '10TL Adet', 'Risk Puan', 'Risk']
+                            'Sigara', 'İç Hırs.', '10TL Adet', '10TL Tutar', 'Risk Puan', 'Risk']
                 display_filtered = filtered_df[show_cols].copy()
                 display_filtered['Satış'] = display_filtered['Satış'].apply(lambda x: f"{x:,.0f}")
                 display_filtered['Net Fark'] = display_filtered['Net Fark'].apply(lambda x: f"{x:,.0f}")
                 display_filtered['Kayıp %'] = display_filtered['Kayıp %'].apply(lambda x: f"%{x:.1f}")
+                display_filtered['10TL Tutar'] = display_filtered['10TL Tutar'].apply(lambda x: f"{x:,.0f}")
                 display_filtered['Risk Puan'] = display_filtered['Risk Puan'].apply(lambda x: f"{x:.0f}")
                 
                 st.dataframe(display_filtered, use_container_width=True, hide_index=True)
