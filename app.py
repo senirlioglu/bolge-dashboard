@@ -10,6 +10,58 @@ from datetime import datetime
 # Sayfa ayarı
 st.set_page_config(page_title="Bölge Dashboard", layout="wide", page_icon="🌍")
 
+# ==================== GİRİŞ SİSTEMİ ====================
+USERS = {
+    "ziya": "Gm2025!",
+    "sm1": "Sm12025!",
+    "sm2": "Sm22025!",
+    "sm3": "Sm32025!",
+    "sm4": "Sm42025!",
+    "sma": "Sma2025!",
+}
+
+def login():
+    if "user" not in st.session_state:
+        st.session_state.user = None
+    
+    if st.session_state.user is None:
+        st.markdown("""
+        <div style="max-width: 400px; margin: 100px auto; padding: 40px; 
+                    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+                    border-radius: 15px; text-align: center;">
+            <h1 style="color: white;">🌍 Bölge Dashboard</h1>
+            <p style="color: #aaa;">Envanter Risk Analizi</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.markdown("### 🔐 Giriş Yap")
+            username = st.text_input("Kullanıcı Adı", key="login_user")
+            password = st.text_input("Şifre", type="password", key="login_pass")
+            
+            if st.button("Giriş", use_container_width=True):
+                if username.lower() in USERS and USERS[username.lower()] == password:
+                    st.session_state.user = username.lower()
+                    st.rerun()
+                else:
+                    st.error("❌ Hatalı kullanıcı adı veya şifre")
+        st.stop()
+
+login()
+
+# ==================== ANA UYGULAMA ====================
+
+# Çıkış butonu sağ üstte
+col_title, col_user = st.columns([4, 1])
+with col_title:
+    st.title("🌍 Bölge Dashboard")
+with col_user:
+    st.markdown(f"👤 **{st.session_state.user.upper()}**")
+    if st.button("🚪 Çıkış", key="logout_btn"):
+        st.session_state.user = None
+        st.rerun()
+
 # CSS
 st.markdown("""
 <style>
@@ -256,6 +308,22 @@ def analyze_store(df_store):
     fark = df_store['TOPLAM_FARK'].sum()
     fire = df_store['Fire Tutarı'].sum()
     kayip_oran = abs(fark) / satis * 100 if satis > 0 else 0
+    fire_oran = abs(fire) / satis * 100 if satis > 0 else 0
+    
+    # Gün hesabı
+    gun_sayisi = 1
+    try:
+        if 'Envanter Tarihi' in df_store.columns and 'Envanter Başlangıç Tarihi' in df_store.columns:
+            env_tarihi = pd.to_datetime(df_store['Envanter Tarihi'].iloc[0])
+            env_baslangic = pd.to_datetime(df_store['Envanter Başlangıç Tarihi'].iloc[0])
+            gun_sayisi = (env_tarihi - env_baslangic).days
+            if gun_sayisi <= 0:
+                gun_sayisi = 1
+    except:
+        gun_sayisi = 1
+    
+    gunluk_fark = fark / gun_sayisi
+    gunluk_fire = fire / gun_sayisi
     
     internal_df = detect_internal_theft(df_store)
     chronic_df = detect_chronic_shortage(df_store)
@@ -267,6 +335,10 @@ def analyze_store(df_store):
         'fark': fark,
         'fire': fire,
         'kayip_oran': kayip_oran,
+        'fire_oran': fire_oran,
+        'gun_sayisi': gun_sayisi,
+        'gunluk_fark': gunluk_fark,
+        'gunluk_fire': gunluk_fire,
         'ic_hirsizlik': len(internal_df),
         'kronik': len(chronic_df),
         'sigara': len(cigarette_df),
@@ -348,6 +420,10 @@ def analyze_all_stores(df):
             'Sigara': data['sigara'],
             '10TL Adet': data['kasa_adet'],
             '10TL Tutar': data['kasa_tutar'],
+            'Fire %': data['fire_oran'],
+            'Gün': data['gun_sayisi'],
+            'Günlük Fark': data['gunluk_fark'],
+            'Günlük Fire': data['gunluk_fire'],
             'Risk Puan': risk_puan,
             'Risk': risk_seviye,
             'Risk Class': risk_class,
@@ -375,15 +451,26 @@ def aggregate_by_group(store_df, group_col):
         'Kronik': 'sum',
         'Sigara': 'sum',
         '10TL Adet': 'sum',
+        'Gün': 'sum',
         'Risk Puan': 'mean'
     }).reset_index()
     
     grouped.columns = [group_col, 'Mağaza Sayısı', 'Satış', 'Net Fark', 'Fire', 
-                       'İç Hırs.', 'Kronik', 'Sigara', '10TL Adet', 'Ort. Risk']
+                       'İç Hırs.', 'Kronik', 'Sigara', '10TL Adet', 'Toplam Gün', 'Ort. Risk']
     
     # Kayıp oranı
     grouped['Kayıp %'] = abs(grouped['Net Fark']) / grouped['Satış'] * 100
     grouped['Kayıp %'] = grouped['Kayıp %'].fillna(0)
+    
+    # Fire oranı
+    grouped['Fire %'] = abs(grouped['Fire']) / grouped['Satış'] * 100
+    grouped['Fire %'] = grouped['Fire %'].fillna(0)
+    
+    # Günlük fark ve fire
+    grouped['Günlük Fark'] = grouped['Net Fark'] / grouped['Toplam Gün']
+    grouped['Günlük Fark'] = grouped['Günlük Fark'].fillna(0)
+    grouped['Günlük Fire'] = grouped['Fire'] / grouped['Toplam Gün']
+    grouped['Günlük Fire'] = grouped['Günlük Fire'].fillna(0)
     
     # Risk seviyesi
     grouped['Risk'] = grouped['Ort. Risk'].apply(lambda x: get_risk_level(x)[0])
@@ -397,6 +484,60 @@ def aggregate_by_group(store_df, group_col):
     grouped = grouped.sort_values('Ort. Risk', ascending=False)
     
     return grouped
+
+
+def create_store_report(store_row, params):
+    """Tek mağaza için basit Excel raporu"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "MAĞAZA RAPORU"
+    
+    header_font = Font(bold=True, color='FFFFFF', size=10)
+    header_fill = PatternFill('solid', fgColor='1F4E79')
+    title_font = Font(bold=True, size=14)
+    border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                    top=Side(style='thin'), bottom=Side(style='thin'))
+    
+    ws['A1'] = f"MAĞAZA: {store_row['Mağaza Kodu']} - {store_row['Mağaza Adı']}"
+    ws['A1'].font = title_font
+    ws['A2'] = f"Dönem: {params.get('donem', '')} | SM: {store_row['SM']} | BS: {store_row['BS']}"
+    
+    # Metrikler
+    ws['A4'] = "METRİKLER"
+    ws['A4'].font = Font(bold=True, size=11)
+    
+    metrics = [
+        ("Satış", f"{store_row['Satış']:,.0f} TL"),
+        ("Net Fark", f"{store_row['Net Fark']:,.0f} TL"),
+        ("Fire", f"{store_row['Fire']:,.0f} TL"),
+        ("Kayıp %", f"%{store_row['Kayıp %']:.2f}"),
+        ("Fire %", f"%{store_row.get('Fire %', 0):.2f}"),
+        ("Gün Sayısı", f"{store_row.get('Gün', 0):.0f}"),
+        ("Günlük Fark", f"{store_row.get('Günlük Fark', 0):,.0f} TL"),
+        ("Günlük Fire", f"{store_row.get('Günlük Fire', 0):,.0f} TL"),
+        ("İç Hırsızlık", f"{store_row['İç Hırs.']}"),
+        ("Kronik Açık", f"{store_row['Kronik']}"),
+        ("Sigara Açığı", f"{store_row['Sigara']}"),
+        ("10TL Adet", f"{store_row['10TL Adet']:.0f}"),
+        ("10TL Tutar", f"{store_row['10TL Tutar']:,.0f} TL"),
+        ("Risk Puanı", f"{store_row['Risk Puan']:.0f}"),
+        ("Risk Seviyesi", store_row['Risk']),
+        ("Risk Nedenleri", store_row['Nedenler']),
+    ]
+    
+    for i, (label, value) in enumerate(metrics, start=5):
+        ws[f'A{i}'] = label
+        ws[f'B{i}'] = value
+        ws[f'A{i}'].border = border
+        ws[f'B{i}'].border = border
+    
+    ws.column_dimensions['A'].width = 20
+    ws.column_dimensions['B'].width = 30
+    
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 
 def create_excel_report(store_df, sm_df, bs_df, params):
@@ -618,7 +759,11 @@ if uploaded_file is not None:
             toplam_satis = store_df['Satış'].sum()
             toplam_fark = store_df['Net Fark'].sum()
             toplam_fire = store_df['Fire'].sum()
+            toplam_gun = store_df['Gün'].sum()
             genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+            fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+            gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
+            gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
             
             # Risk sayıları
             kritik = len(store_df[store_df['Risk'].str.contains('KRİTİK')])
@@ -633,11 +778,11 @@ if uploaded_file is not None:
             with col1:
                 st.metric("💰 Toplam Satış", f"{toplam_satis/1_000_000:.1f}M TL")
             with col2:
-                st.metric("📉 Net Fark", f"{toplam_fark:,.0f} TL")
+                st.metric("📉 Net Fark", f"{toplam_fark:,.0f} TL", f"Günlük: {gunluk_fark:,.0f}₺")
             with col3:
-                st.metric("🔥 Fire", f"{toplam_fire:,.0f} TL")
+                st.metric("🔥 Fire", f"{toplam_fire:,.0f} TL", f"Günlük: {gunluk_fire:,.0f}₺")
             with col4:
-                st.metric("📊 Kayıp Oranı", f"%{genel_oran:.2f}")
+                st.metric("📊 Kayıp Oranı", f"%{genel_oran:.2f}", f"Fire: %{fire_oran:.2f}")
             
             # Risk dağılımı
             st.markdown("### 📊 Risk Dağılımı")
@@ -661,7 +806,7 @@ if uploaded_file is not None:
                 
                 for idx, (_, row) in enumerate(top10.iterrows()):
                     risk_class = row['Risk Class']
-                    col1, col2 = st.columns([1, 3])
+                    col1, col2, col3 = st.columns([1, 3, 0.5])
                     
                     with col1:
                         st.markdown(f"""
@@ -681,7 +826,7 @@ if uploaded_file is not None:
                         c1.metric("🚬 Sigara", row['Sigara'])
                         c2.metric("🔒 İç Hırs.", row['İç Hırs.'])
                         c3.metric("📉 Kayıp", f"%{row['Kayıp %']:.1f}")
-                        c4.metric("💵 Net Fark", f"{row['Net Fark']:,.0f}")
+                        c4.metric("💵 Net Fark", f"{row['Net Fark']:,.0f}", f"Günlük: {row['Günlük Fark']:,.0f}₺")
                         # 10TL adet ve tutar
                         if row['10TL Adet'] > 0:
                             c5.metric("💰 10TL", f"+{row['10TL Adet']:.0f}", f"{row['10TL Tutar']:,.0f}₺")
@@ -693,17 +838,32 @@ if uploaded_file is not None:
                         if row['Nedenler'] != "-":
                             st.caption(f"**Nedenler:** {row['Nedenler']}")
                     
+                    with col3:
+                        # İndirme butonu
+                        report_data = create_store_report(row, params)
+                        st.download_button(
+                            label="📥",
+                            data=report_data,
+                            file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"top10_dl_{idx}"
+                        )
+                    
                     st.divider()
             
             # SM BAZLI
             with tabs[1]:
                 st.markdown("### 👔 Satış Müdürleri Karşılaştırma")
                 if len(sm_df) > 0:
-                    display_cols = ['SM', 'Mağaza Sayısı', 'Satış', 'Net Fark', 'Kayıp %', 'Sigara', 'İç Hırs.', 'Kritik Mağaza', 'Ort. Risk', 'Risk']
+                    display_cols = ['SM', 'Mağaza Sayısı', 'Satış', 'Net Fark', 'Günlük Fark', 'Fire', 'Günlük Fire', 'Kayıp %', 'Fire %', 'Sigara', 'Kritik Mağaza', 'Ort. Risk', 'Risk']
                     display_sm = sm_df[display_cols].copy()
                     display_sm['Satış'] = display_sm['Satış'].apply(lambda x: f"{x/1_000_000:.1f}M")
                     display_sm['Net Fark'] = display_sm['Net Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_sm['Günlük Fark'] = display_sm['Günlük Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_sm['Fire'] = display_sm['Fire'].apply(lambda x: f"{x:,.0f}")
+                    display_sm['Günlük Fire'] = display_sm['Günlük Fire'].apply(lambda x: f"{x:,.0f}")
                     display_sm['Kayıp %'] = display_sm['Kayıp %'].apply(lambda x: f"%{x:.2f}")
+                    display_sm['Fire %'] = display_sm['Fire %'].apply(lambda x: f"%{x:.2f}")
                     display_sm['Ort. Risk'] = display_sm['Ort. Risk'].apply(lambda x: f"{x:.0f}")
                     st.dataframe(display_sm, use_container_width=True, hide_index=True)
                     
@@ -711,9 +871,31 @@ if uploaded_file is not None:
                     st.markdown("---")
                     selected_sm = st.selectbox("📋 SM Detay Göster", sm_df['SM'].tolist())
                     if selected_sm:
+                        sm_row = sm_df[sm_df['SM'] == selected_sm].iloc[0]
                         sm_magazalar = store_df[store_df['SM'] == selected_sm]
-                        st.markdown(f"#### {selected_sm} - Mağazalar ({len(sm_magazalar)})")
-                        show_cols = ['Mağaza Kodu', 'Mağaza Adı', 'BS', 'Kayıp %', 'Sigara', 'İç Hırs.', 'Risk Puan', 'Risk']
+                        
+                        # SM Özet metrikleri
+                        st.markdown(f"#### {selected_sm} - Özet")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("📊 Mağaza", f"{len(sm_magazalar)}")
+                        c2.metric("📉 Net Fark", f"{sm_row['Net Fark']:,.0f}₺", f"Günlük: {sm_row['Günlük Fark']:,.0f}₺")
+                        c3.metric("🔥 Fire", f"{sm_row['Fire']:,.0f}₺", f"Günlük: {sm_row['Günlük Fire']:,.0f}₺")
+                        c4.metric("📊 Risk", f"{sm_row['Ort. Risk']:.0f}")
+                        
+                        # BS'ler
+                        st.markdown("##### 👤 Bölge Sorumluları")
+                        sm_bs_list = sm_magazalar['BS'].unique().tolist()
+                        for bs_name in sm_bs_list:
+                            bs_mag = sm_magazalar[sm_magazalar['BS'] == bs_name]
+                            bs_fark = bs_mag['Net Fark'].sum()
+                            bs_fire = bs_mag['Fire'].sum()
+                            bs_risk = bs_mag['Risk Puan'].mean()
+                            bs_sigara = bs_mag['Sigara'].sum()
+                            st.info(f"**{bs_name}**: {len(bs_mag)} mağaza | Fark: {bs_fark:,.0f}₺ | Fire: {bs_fire:,.0f}₺ | Risk: {bs_risk:.0f} | 🚬 {bs_sigara}")
+                        
+                        # Mağaza listesi
+                        st.markdown("##### 🏪 Mağazalar")
+                        show_cols = ['Mağaza Kodu', 'Mağaza Adı', 'BS', 'Net Fark', 'Günlük Fark', 'Kayıp %', 'Sigara', 'İç Hırs.', 'Risk Puan', 'Risk']
                         st.dataframe(sm_magazalar[show_cols], use_container_width=True, hide_index=True)
                 else:
                     st.info("SM verisi bulunamadı")
@@ -722,11 +904,15 @@ if uploaded_file is not None:
             with tabs[2]:
                 st.markdown("### 👤 Bölge Sorumluları Karşılaştırma")
                 if len(bs_df) > 0:
-                    display_cols = ['BS', 'Mağaza Sayısı', 'Satış', 'Net Fark', 'Kayıp %', 'Sigara', 'İç Hırs.', 'Kritik Mağaza', 'Ort. Risk', 'Risk']
+                    display_cols = ['BS', 'Mağaza Sayısı', 'Satış', 'Net Fark', 'Günlük Fark', 'Fire', 'Günlük Fire', 'Kayıp %', 'Fire %', 'Sigara', 'Kritik Mağaza', 'Ort. Risk', 'Risk']
                     display_bs = bs_df[display_cols].copy()
                     display_bs['Satış'] = display_bs['Satış'].apply(lambda x: f"{x/1_000_000:.1f}M")
                     display_bs['Net Fark'] = display_bs['Net Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_bs['Günlük Fark'] = display_bs['Günlük Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_bs['Fire'] = display_bs['Fire'].apply(lambda x: f"{x:,.0f}")
+                    display_bs['Günlük Fire'] = display_bs['Günlük Fire'].apply(lambda x: f"{x:,.0f}")
                     display_bs['Kayıp %'] = display_bs['Kayıp %'].apply(lambda x: f"%{x:.2f}")
+                    display_bs['Fire %'] = display_bs['Fire %'].apply(lambda x: f"%{x:.2f}")
                     display_bs['Ort. Risk'] = display_bs['Ort. Risk'].apply(lambda x: f"{x:.0f}")
                     st.dataframe(display_bs, use_container_width=True, hide_index=True)
                     
@@ -734,10 +920,28 @@ if uploaded_file is not None:
                     st.markdown("---")
                     selected_bs = st.selectbox("📋 BS Detay Göster", bs_df['BS'].tolist())
                     if selected_bs:
+                        bs_row = bs_df[bs_df['BS'] == selected_bs].iloc[0]
                         bs_magazalar = store_df[store_df['BS'] == selected_bs]
-                        st.markdown(f"#### {selected_bs} - Mağazalar ({len(bs_magazalar)})")
-                        show_cols = ['Mağaza Kodu', 'Mağaza Adı', 'Kayıp %', 'Sigara', 'İç Hırs.', 'Risk Puan', 'Risk']
-                        st.dataframe(bs_magazalar[show_cols], use_container_width=True, hide_index=True)
+                        
+                        # BS Özet metrikleri
+                        st.markdown(f"#### {selected_bs} - Özet")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("📊 Mağaza", f"{len(bs_magazalar)}")
+                        c2.metric("📉 Net Fark", f"{bs_row['Net Fark']:,.0f}₺", f"Günlük: {bs_row['Günlük Fark']:,.0f}₺")
+                        c3.metric("🔥 Fire", f"{bs_row['Fire']:,.0f}₺", f"Günlük: {bs_row['Günlük Fire']:,.0f}₺")
+                        c4.metric("📊 Risk", f"{bs_row['Ort. Risk']:.0f}")
+                        
+                        # Mağaza listesi indirme butonlu
+                        st.markdown("##### 🏪 Mağazalar")
+                        for idx, (_, row) in enumerate(bs_magazalar.iterrows()):
+                            col1, col2 = st.columns([5, 1])
+                            with col1:
+                                sigara_txt = f"🚬 {row['Sigara']}" if row['Sigara'] > 0 else ""
+                                st.write(f"**{row['Mağaza Kodu']}** - {row['Mağaza Adı'][:25]} | Fark: {row['Net Fark']:,.0f}₺ | Risk: {row['Risk Puan']:.0f} {sigara_txt}")
+                            with col2:
+                                report_data = create_store_report(row, params)
+                                st.download_button("📥", data=report_data, file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx", 
+                                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"bs_dl_{idx}")
                 else:
                     st.info("BS verisi bulunamadı")
             
