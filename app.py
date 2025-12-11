@@ -254,11 +254,11 @@ def check_10tl_products(df):
     return {'adet': toplam_adet, 'tutar': toplam_tutar}
 
 
-def calculate_risk_score(kayip_oran, sigara_count, ic_hirsizlik_count, kronik_count, kasa_adet, bolge_ort):
+def calculate_risk_score(toplam_oran, sigara_count, ic_hirsizlik_count, kronik_count, kasa_adet, bolge_ort):
     """
     Risk puanı hesaplama (0-100)
     Ağırlıklar:
-    - Kayıp Oranı: %30
+    - Toplam Oran: %30
     - Sigara Açığı: %30
     - İç Hırsızlık: %30
     - Kronik Açık: %5
@@ -266,13 +266,13 @@ def calculate_risk_score(kayip_oran, sigara_count, ic_hirsizlik_count, kronik_co
     """
     puan = 0
     
-    # Kayıp Oranı (30 puan) - Bölge ortalamasına göre
-    if bolge_ort['kayip_oran'] > 0:
-        kayip_ratio = kayip_oran / bolge_ort['kayip_oran']
-        kayip_puan = min(30, kayip_ratio * 15)  # 2x ortalama = 30 puan
+    # Toplam Oran (30 puan) - Bölge ortalamasına göre
+    if bolge_ort['toplam_oran'] > 0:
+        oran_ratio = toplam_oran / bolge_ort['toplam_oran']
+        oran_puan = min(30, oran_ratio * 15)  # 2x ortalama = 30 puan
     else:
-        kayip_puan = min(30, kayip_oran * 20)
-    puan += kayip_puan
+        oran_puan = min(30, toplam_oran * 20)
+    puan += oran_puan
     
     # Sigara Açığı (30 puan) - Her sigara kritik
     if sigara_count > 10:
@@ -330,15 +330,22 @@ def get_risk_level(puan):
 def analyze_store(df_store):
     """Tek mağaza analizi"""
     satis = df_store['Satış Tutarı'].sum()
-    fark = df_store['TOPLAM_FARK'].sum()  # Fark + Kısmi + Önceki
-    fire = df_store['Fire Tutarı'].sum()
-    kismi = df_store['Kısmi Envanter Tutarı'].fillna(0).sum()
     
-    # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
+    # Fark = Fark Tutarı + Kısmi Envanter Tutarı
     fark_tutari = df_store['Fark Tutarı'].fillna(0).sum()
-    kayip = fark_tutari + fire + kismi
-    kayip_oran = abs(kayip) / satis * 100 if satis > 0 else 0
+    kismi_tutari = df_store['Kısmi Envanter Tutarı'].fillna(0).sum()
+    fark = fark_tutari + kismi_tutari
+    
+    # Fire = Fire Tutarı
+    fire = df_store['Fire Tutarı'].fillna(0).sum()
+    
+    # Toplam Açık = Fark + Fire (yani Fark Tutarı + Kısmi + Fire)
+    toplam_acik = fark + fire
+    
+    # Oranlar
+    fark_oran = abs(fark) / satis * 100 if satis > 0 else 0
     fire_oran = abs(fire) / satis * 100 if satis > 0 else 0
+    toplam_oran = abs(toplam_acik) / satis * 100 if satis > 0 else 0
     
     # Gün hesabı
     gun_sayisi = 1
@@ -364,8 +371,10 @@ def analyze_store(df_store):
         'satis': satis,
         'fark': fark,
         'fire': fire,
-        'kayip_oran': kayip_oran,
+        'toplam_acik': toplam_acik,
+        'fark_oran': fark_oran,
         'fire_oran': fire_oran,
+        'toplam_oran': toplam_oran,
         'gun_sayisi': gun_sayisi,
         'gunluk_fark': gunluk_fark,
         'gunluk_fire': gunluk_fire,
@@ -405,18 +414,18 @@ def analyze_all_stores(df):
     # Bölge ortalamaları
     if len(store_data) > 0:
         bolge_ort = {
-            'kayip_oran': np.mean([s['kayip_oran'] for s in store_data.values()]),
+            'toplam_oran': np.mean([s['toplam_oran'] for s in store_data.values()]),
             'ic_hirsizlik': np.mean([s['ic_hirsizlik'] for s in store_data.values()]),
             'kronik': np.mean([s['kronik'] for s in store_data.values()]),
             'sigara': np.mean([s['sigara'] for s in store_data.values()]),
         }
     else:
-        bolge_ort = {'kayip_oran': 1, 'ic_hirsizlik': 1, 'kronik': 1, 'sigara': 1}
+        bolge_ort = {'toplam_oran': 1, 'ic_hirsizlik': 1, 'kronik': 1, 'sigara': 1}
     
     # Risk puanları hesapla
     for mag, data in store_data.items():
         risk_puan = calculate_risk_score(
-            data['kayip_oran'],
+            data['toplam_oran'],
             data['sigara'],
             data['ic_hirsizlik'],
             data['kronik'],
@@ -429,8 +438,8 @@ def analyze_all_stores(df):
         nedenler = []
         if data['sigara'] > 0:
             nedenler.append(f"🚬 Sigara:{data['sigara']}")
-        if data['kayip_oran'] > bolge_ort['kayip_oran'] * 1.5:
-            nedenler.append(f"📉 Kayıp:%{data['kayip_oran']:.1f}")
+        if data['toplam_oran'] > bolge_ort['toplam_oran'] * 1.5:
+            nedenler.append(f"📉 Toplam:%{data['toplam_oran']:.1f}")
         if data['ic_hirsizlik'] > bolge_ort['ic_hirsizlik'] * 1.5:
             nedenler.append(f"🔒 İç Hırs:{data['ic_hirsizlik']}")
         if data['kasa_adet'] > 10:
@@ -442,15 +451,17 @@ def analyze_all_stores(df):
             'SM': data['sm'],
             'BS': data['bs'],
             'Satış': data['satis'],
-            'Net Fark': data['fark'],
+            'Fark': data['fark'],
             'Fire': data['fire'],
-            'Kayıp %': data['kayip_oran'],
+            'Toplam Açık': data['toplam_acik'],
+            'Fark %': data['fark_oran'],
+            'Fire %': data['fire_oran'],
+            'Toplam %': data['toplam_oran'],
             'İç Hırs.': data['ic_hirsizlik'],
             'Kronik': data['kronik'],
             'Sigara': data['sigara'],
             '10TL Adet': data['kasa_adet'],
             '10TL Tutar': data['kasa_tutar'],
-            'Fire %': data['fire_oran'],
             'Gün': data['gun_sayisi'],
             'Günlük Fark': data['gunluk_fark'],
             'Günlük Fire': data['gunluk_fire'],
@@ -475,8 +486,9 @@ def aggregate_by_group(store_df, group_col):
     grouped = store_df.groupby(group_col).agg({
         'Mağaza Kodu': 'count',
         'Satış': 'sum',
-        'Net Fark': 'sum',
+        'Fark': 'sum',
         'Fire': 'sum',
+        'Toplam Açık': 'sum',
         'İç Hırs.': 'sum',
         'Kronik': 'sum',
         'Sigara': 'sum',
@@ -485,19 +497,21 @@ def aggregate_by_group(store_df, group_col):
         'Risk Puan': 'mean'
     }).reset_index()
     
-    grouped.columns = [group_col, 'Mağaza Sayısı', 'Satış', 'Net Fark', 'Fire', 
+    grouped.columns = [group_col, 'Mağaza Sayısı', 'Satış', 'Fark', 'Fire', 'Toplam Açık',
                        'İç Hırs.', 'Kronik', 'Sigara', '10TL Adet', 'Toplam Gün', 'Ort. Risk']
     
-    # Kayıp oranı = |Net Fark + Fire| / Satış × 100
-    grouped['Kayıp %'] = abs(grouped['Net Fark'] + grouped['Fire']) / grouped['Satış'] * 100
-    grouped['Kayıp %'] = grouped['Kayıp %'].fillna(0)
+    # Oranlar
+    grouped['Fark %'] = abs(grouped['Fark']) / grouped['Satış'] * 100
+    grouped['Fark %'] = grouped['Fark %'].fillna(0)
     
-    # Fire oranı
     grouped['Fire %'] = abs(grouped['Fire']) / grouped['Satış'] * 100
     grouped['Fire %'] = grouped['Fire %'].fillna(0)
     
+    grouped['Toplam %'] = abs(grouped['Toplam Açık']) / grouped['Satış'] * 100
+    grouped['Toplam %'] = grouped['Toplam %'].fillna(0)
+    
     # Günlük fark ve fire
-    grouped['Günlük Fark'] = grouped['Net Fark'] / grouped['Toplam Gün']
+    grouped['Günlük Fark'] = grouped['Fark'] / grouped['Toplam Gün']
     grouped['Günlük Fark'] = grouped['Günlük Fark'].fillna(0)
     grouped['Günlük Fire'] = grouped['Fire'] / grouped['Toplam Gün']
     grouped['Günlük Fire'] = grouped['Günlük Fire'].fillna(0)
@@ -555,12 +569,13 @@ def create_store_report(store_row, params, df_all=None):
     ws['A4'].font = subtitle_font
     
     metrics = [
-        ("Toplam Ürün", f"{store_row.get('Ürün Sayısı', '-')}"),
-        ("Açık Veren Ürün", f"{store_row.get('Açık Ürün', '-')}"),
         ("Toplam Satış", f"{store_row['Satış']:,.0f} TL"),
-        ("Net Fark", f"{store_row['Net Fark']:,.0f} TL"),
-        ("Fire Tutarı", f"{store_row['Fire']:,.0f} TL"),
-        ("Açık/Satış Oranı", f"%{store_row['Kayıp %']:.2f}"),
+        ("Fark (Fark+Kısmi)", f"{store_row['Fark']:,.0f} TL"),
+        ("Fire", f"{store_row['Fire']:,.0f} TL"),
+        ("Toplam Açık", f"{store_row['Toplam Açık']:,.0f} TL"),
+        ("Fark Oranı", f"%{store_row['Fark %']:.2f}"),
+        ("Fire Oranı", f"%{store_row['Fire %']:.2f}"),
+        ("Toplam Oran", f"%{store_row['Toplam %']:.2f}"),
     ]
     
     for i, (label, value) in enumerate(metrics, start=5):
@@ -569,8 +584,8 @@ def create_store_report(store_row, params, df_all=None):
         ws[f'A{i}'].border = border
         ws[f'B{i}'].border = border
     
-    ws['A12'] = "RİSK DEĞERLENDİRMESİ"
-    ws['A12'].font = subtitle_font
+    ws['A13'] = "RİSK DEĞERLENDİRMESİ"
+    ws['A13'].font = subtitle_font
     
     risk_metrics = [
         ("Risk Seviyesi", store_row['Risk']),
@@ -582,7 +597,7 @@ def create_store_report(store_row, params, df_all=None):
         ("10TL Ürünleri", f"{store_row['10TL Adet']:.0f} adet / {store_row['10TL Tutar']:,.0f} TL"),
     ]
     
-    for i, (label, value) in enumerate(risk_metrics, start=13):
+    for i, (label, value) in enumerate(risk_metrics, start=14):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
         ws[f'A{i}'].border = border
@@ -989,12 +1004,15 @@ if uploaded_file is not None:
         else:
             # Bölge toplamları
             toplam_satis = store_df['Satış'].sum()
-            toplam_fark = store_df['Net Fark'].sum()
+            toplam_fark = store_df['Fark'].sum()  # Fark + Kısmi
             toplam_fire = store_df['Fire'].sum()
+            toplam_acik = store_df['Toplam Açık'].sum()  # Fark + Kısmi + Fire
             toplam_gun = store_df['Gün'].sum()
-            # Kayıp Oranı = |Fark + Fire| / Satış × 100
-            genel_oran = abs(toplam_fark + toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+            
+            # Oranlar
+            fark_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
             fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+            toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
             gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
             gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
             
@@ -1011,11 +1029,11 @@ if uploaded_file is not None:
             with col1:
                 st.metric("💰 Toplam Satış", f"{toplam_satis/1_000_000:.1f}M TL")
             with col2:
-                st.metric("📉 Net Fark", f"{toplam_fark:,.0f} TL", f"Günlük: {gunluk_fark:,.0f}₺")
+                st.metric("📉 Fark", f"{toplam_fark:,.0f} TL", f"%{fark_oran:.2f} | Günlük: {gunluk_fark:,.0f}₺")
             with col3:
-                st.metric("🔥 Fire", f"{toplam_fire:,.0f} TL", f"Günlük: {gunluk_fire:,.0f}₺")
+                st.metric("🔥 Fire", f"{toplam_fire:,.0f} TL", f"%{fire_oran:.2f} | Günlük: {gunluk_fire:,.0f}₺")
             with col4:
-                st.metric("📊 Kayıp Oranı", f"%{genel_oran:.2f}", f"Fire: %{fire_oran:.2f}")
+                st.metric("📊 Toplam", f"{toplam_acik:,.0f} TL", f"%{toplam_oran:.2f}")
             
             # Risk dağılımı
             st.markdown("### 📊 Risk Dağılımı")
@@ -1058,15 +1076,9 @@ if uploaded_file is not None:
                         c1, c2, c3, c4, c5 = st.columns(5)
                         c1.metric("🚬 Sigara", row['Sigara'])
                         c2.metric("🔒 İç Hırs.", row['İç Hırs.'])
-                        c3.metric("📉 Kayıp", f"%{row['Kayıp %']:.1f}")
-                        c4.metric("💵 Net Fark", f"{row['Net Fark']:,.0f}", f"Günlük: {row['Günlük Fark']:,.0f}₺")
-                        # 10TL adet ve tutar
-                        if row['10TL Adet'] > 0:
-                            c5.metric("💰 10TL", f"+{row['10TL Adet']:.0f}", f"{row['10TL Tutar']:,.0f}₺")
-                        elif row['10TL Adet'] < 0:
-                            c5.metric("💰 10TL", f"{row['10TL Adet']:.0f}", f"{row['10TL Tutar']:,.0f}₺")
-                        else:
-                            c5.metric("💰 10TL", "0")
+                        c3.metric("📉 Fark", f"{row['Fark']:,.0f}", f"%{row['Fark %']:.1f}")
+                        c4.metric("🔥 Fire", f"{row['Fire']:,.0f}", f"%{row['Fire %']:.1f}")
+                        c5.metric("📊 Toplam", f"%{row['Toplam %']:.1f}")
                         
                         if row['Nedenler'] != "-":
                             st.caption(f"**Nedenler:** {row['Nedenler']}")
