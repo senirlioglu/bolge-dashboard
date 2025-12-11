@@ -992,7 +992,8 @@ if uploaded_file is not None:
             toplam_fark = store_df['Net Fark'].sum()
             toplam_fire = store_df['Fire'].sum()
             toplam_gun = store_df['Gün'].sum()
-            genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+            # Kayıp Oranı = |Fark + Fire| / Satış × 100
+            genel_oran = abs(toplam_fark + toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
             fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
             gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
             gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
