@@ -1076,7 +1076,7 @@ if uploaded_file is not None:
                         c2.metric("🔒 İç Hırs.", row['İç Hırs.'])
                         c3.metric("📉 Fark", f"{row['Fark']:,.0f}", f"%{row['Fark %']:.1f}")
                         c4.metric("🔥 Fire", f"{row['Fire']:,.0f}", f"%{row['Fire %']:.1f}")
-                        c5.metric("📊 Toplam", f"%{row['Toplam %']:.1f}")
+                        c5.metric("📊 Toplam", f"{row['Toplam Açık']:,.0f}", f"%{row['Toplam %']:.1f}")
                         
                         if row['Nedenler'] != "-":
                             st.caption(f"**Nedenler:** {row['Nedenler']}")
