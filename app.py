@@ -624,6 +624,26 @@ def create_store_report(store_row, params, df_all=None):
         df_mag = df_all[df_all['Mağaza Kodu'] == mag_kod].copy()
         
         if len(df_mag) > 0:
+            # EN RİSKLİ 20 - Fark Tutarı en düşük olanlar
+            top20_df = df_mag.nsmallest(20, 'Fark Tutarı')[['Malzeme Kodu', 'Malzeme Adı', 'Fark Miktarı', 'Fark Tutarı', 'Fire Tutarı', 'Satış Fiyatı']].copy()
+            
+            if len(top20_df) > 0:
+                ws_top = wb.create_sheet("EN RİSKLİ 20")
+                ws_top['A1'] = "En Çok Açık Veren 20 Ürün"
+                ws_top['A1'].font = subtitle_font
+                
+                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark Miktarı', 'Fark Tutarı', 'Fire Tutarı', 'Satış Fiyatı']
+                for col, h in enumerate(headers, 1):
+                    cell = ws_top.cell(row=3, column=col, value=h)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.border = border
+                
+                for r_idx, (_, row) in enumerate(top20_df.iterrows(), 4):
+                    for c_idx, col in enumerate(headers, 1):
+                        cell = ws_top.cell(row=r_idx, column=c_idx, value=row[col])
+                        cell.border = border
+            
             # İç Hırsızlık Analizi
             internal_results = []
             for idx, row in df_mag.iterrows():
@@ -686,11 +706,10 @@ def create_store_report(store_row, params, df_all=None):
                         cell = ws3.cell(row=r_idx, column=c_idx, value=item[key])
                         cell.border = border
             
-            # Sigara Açığı
+            # Sigara Açığı - Fark + Kısmi (Önceki dahil değil)
             sigara_results = []
             toplam_fark = 0
             toplam_kismi = 0
-            toplam_onceki = 0
             
             for idx, row in df_mag.iterrows():
                 urun_grubu = str(row.get('Ürün Grubu', '')).upper()
@@ -703,30 +722,27 @@ def create_store_report(store_row, params, df_all=None):
                 if is_cigarette:
                     fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
                     kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
-                    onceki = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
                     
                     toplam_fark += fark
                     toplam_kismi += kismi
-                    toplam_onceki += onceki
                     
-                    if fark != 0 or kismi != 0 or onceki != 0:
+                    if fark != 0 or kismi != 0:
                         sigara_results.append({
                             'Malzeme Kodu': row.get('Malzeme Kodu', ''),
                             'Malzeme Adı': row.get('Malzeme Adı', ''),
                             'Fark': fark,
                             'Kısmi': kismi,
-                            'Önceki': onceki,
-                            'Toplam': fark + kismi + onceki,
+                            'Toplam': fark + kismi,
                         })
             
-            net_sigara = toplam_fark + toplam_kismi + toplam_onceki
+            net_sigara = toplam_fark + toplam_kismi
             
             if sigara_results or net_sigara < 0:
                 ws4 = wb.create_sheet("SİGARA AÇIĞI")
                 ws4['A1'] = f"⚠️ SİGARA AÇIĞI - NET TOPLAM: {net_sigara:.0f}"
                 ws4['A1'].font = Font(bold=True, size=12, color='FF0000' if net_sigara < 0 else '000000')
                 
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark', 'Kısmi', 'Önceki', 'Toplam']
+                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark', 'Kısmi', 'Toplam']
                 for col, h in enumerate(headers, 1):
                     cell = ws4.cell(row=3, column=col, value=h)
                     cell.font = header_font
@@ -738,7 +754,7 @@ def create_store_report(store_row, params, df_all=None):
                         cell = ws4.cell(row=r_idx, column=c_idx, value=item[key])
                         cell.border = border
             
-            # 10TL Kasa Aktivitesi
+            # 10TL Kasa Aktivitesi - Fark + Kısmi (Önceki dahil değil)
             kasa_results = []
             for idx, row in df_mag.iterrows():
                 kod_str = str(row.get('Malzeme Kodu', '')).replace('.0', '').strip()
@@ -746,8 +762,7 @@ def create_store_report(store_row, params, df_all=None):
                 if kod_str in KASA_AKTIVITESI_KODLARI:
                     fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
                     kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
-                    onceki = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
-                    toplam = fark + kismi + onceki
+                    toplam = fark + kismi  # Önceki dahil değil!
                     
                     if toplam != 0:
                         kasa_results.append({
@@ -755,7 +770,6 @@ def create_store_report(store_row, params, df_all=None):
                             'Malzeme Adı': row.get('Malzeme Adı', ''),
                             'Fark': fark,
                             'Kısmi': kismi,
-                            'Önceki': onceki,
                             'Toplam': toplam,
                             'Durum': 'FAZLA (+)' if toplam > 0 else 'AÇIK (-)'
                         })
@@ -765,7 +779,7 @@ def create_store_report(store_row, params, df_all=None):
                 ws5['A1'] = "⚠️ KASA AKTİVİTESİ ÜRÜNLERİ (10TL) - FAZLA (+) OLANLAR MANİPÜLASYON RİSKİ!"
                 ws5['A1'].font = Font(bold=True, size=11, color='FF0000')
                 
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark', 'Kısmi', 'Önceki', 'Toplam', 'Durum']
+                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark', 'Kısmi', 'Toplam', 'Durum']
                 for col, h in enumerate(headers, 1):
                     cell = ws5.cell(row=3, column=col, value=h)
                     cell.font = header_font
