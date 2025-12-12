@@ -441,7 +441,7 @@ def analyze_all_stores(df):
         if data['ic_hirsizlik'] > bolge_ort['ic_hirsizlik'] * 1.5:
             nedenler.append(f"🔒 İç Hırs:{data['ic_hirsizlik']}")
         if data['kasa_adet'] > 10:
-            nedenler.append(f"💰 10TL:+{data['kasa_adet']:.0f}")
+            nedenler.append(f"💰 10TL:+{data['kasa_adet']:.0f}/{data['kasa_tutar']:,.0f}₺")
         
         results.append({
             'Mağaza Kodu': mag,
