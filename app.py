@@ -529,31 +529,329 @@ def aggregate_by_group(store_df, group_col):
 
 
 def create_store_report(store_row, params, df_all=None):
-    """Tek mağaza için detaylı Excel raporu - SM App ile aynı format"""
+    """Tek mağaza için detaylı Excel raporu - SM App ile birebir aynı format"""
     
     wb = Workbook()
     
     header_font = Font(bold=True, color='FFFFFF', size=10)
     header_fill = PatternFill('solid', fgColor='1F4E79')
+    red_fill = PatternFill('solid', fgColor='FF4444')
     title_font = Font(bold=True, size=14)
     subtitle_font = Font(bold=True, size=11)
     border = Border(left=Side(style='thin'), right=Side(style='thin'),
                     top=Side(style='thin'), bottom=Side(style='thin'))
     wrap_alignment = Alignment(wrap_text=True, vertical='top')
     
-    # Risk renklerine göre fill
-    risk_text = store_row['Risk']
-    if 'KRİTİK' in risk_text:
-        risk_fill = PatternFill('solid', fgColor='FF4444')
-    elif 'RİSKLİ' in risk_text:
-        risk_fill = PatternFill('solid', fgColor='FF8800')
-    elif 'DİKKAT' in risk_text:
-        risk_fill = PatternFill('solid', fgColor='FFCC00')
-    else:
-        risk_fill = PatternFill('solid', fgColor='00CC66')
-    
     mag_kod = store_row['Mağaza Kodu']
     mag_adi = store_row['Mağaza Adı']
+    
+    # Mağaza verisi yoksa sadece özet döndür
+    if df_all is None:
+        ws = wb.active
+        ws.title = "ÖZET"
+        ws['A1'] = f"MAĞAZA: {mag_kod} - {mag_adi}"
+        ws['A1'].font = title_font
+        ws['A2'] = "Detaylı veri yüklenemedi"
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output.getvalue()
+    
+    df_mag = df_all[df_all['Mağaza Kodu'] == mag_kod].copy()
+    
+    if len(df_mag) == 0:
+        ws = wb.active
+        ws.title = "ÖZET"
+        ws['A1'] = f"MAĞAZA: {mag_kod} - {mag_adi}"
+        ws['A1'].font = title_font
+        ws['A2'] = "Mağaza verisi bulunamadı"
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output.getvalue()
+    
+    # ==================== ANALİZLER ====================
+    
+    # Temel metrikler
+    toplam_satis = df_mag['Satış Tutarı'].sum()
+    fark_tutari = df_mag['Fark Tutarı'].fillna(0).sum()
+    kismi_tutari = df_mag['Kısmi Envanter Tutarı'].fillna(0).sum()
+    fire_tutari = df_mag['Fire Tutarı'].fillna(0).sum()
+    fark = fark_tutari + kismi_tutari
+    toplam_acik = fark + fire_tutari
+    fark_oran = abs(fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+    fire_oran = abs(fire_tutari) / toplam_satis * 100 if toplam_satis > 0 else 0
+    toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+    
+    # 1. İÇ HIRSIZLIK (Satış Fiyatı >= 100 TL, Fark <= 0)
+    internal_results = []
+    for idx, row in df_mag.iterrows():
+        satis_fiyati = row.get('Satış Fiyatı', 0) or 0
+        fark_m = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+        kismi_m = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+        onceki_m = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
+        toplam_m = fark_m + kismi_m + onceki_m
+        iptal = row.get('İptal Satır Sayısı', 0) or 0
+        
+        if satis_fiyati >= 100 and toplam_m <= 0:
+            # Risk ve durum hesapla
+            if iptal > 0 and abs(toplam_m) == iptal:
+                durum = "TAM EŞİT"
+                risk = "ÇOK YÜKSEK"
+            elif iptal > 0 and abs(abs(toplam_m) - iptal) <= 2:
+                durum = "YAKIN (±2)"
+                risk = "YÜKSEK"
+            elif iptal > 0:
+                durum = "İPTAL VAR"
+                risk = "ORTA"
+            else:
+                durum = "İPTAL YOK"
+                risk = "DÜŞÜK"
+            
+            internal_results.append({
+                'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                'Malzeme Adı': row.get('Malzeme Adı', ''),
+                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Satış Fiyatı': satis_fiyati,
+                'Fark Miktarı': fark_m,
+                'Kısmi Env.': kismi_m,
+                'Önceki Fark': onceki_m,
+                'TOPLAM': toplam_m,
+                'İptal Satır': iptal,
+                'Fark': toplam_m - (-iptal) if iptal > 0 else toplam_m,
+                'Durum': durum,
+                'Fark Tutarı (TL)': row.get('Fark Tutarı', 0),
+                'Risk': risk
+            })
+    
+    internal_df = pd.DataFrame(internal_results)
+    if len(internal_df) > 0:
+        internal_df = internal_df.sort_values('Fark Tutarı (TL)')
+    
+    # 2. KRONİK AÇIK (Bu dönem ve önceki dönem fark < 0)
+    chronic_results = []
+    for idx, row in df_mag.iterrows():
+        fark_m = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+        onceki_m = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
+        
+        if fark_m < 0 and onceki_m < 0:
+            fark_t = row.get('Fark Tutarı', 0) or 0
+            satis_fiyati = row.get('Satış Fiyatı', 0) or 0
+            onceki_t = onceki_m * satis_fiyati if satis_fiyati else 0
+            
+            chronic_results.append({
+                'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                'Malzeme Adı': row.get('Malzeme Adı', ''),
+                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Bu Dönem Fark': fark_m,
+                'Bu Dönem Tutar': fark_t,
+                'Önceki Fark': onceki_m,
+                'Önceki Tutar': onceki_t,
+                'Toplam Tutar': fark_t + onceki_t
+            })
+    
+    chronic_df = pd.DataFrame(chronic_results)
+    if len(chronic_df) > 0:
+        chronic_df = chronic_df.sort_values('Toplam Tutar')
+    
+    # 3. KRONİK FİRE (Bu dönem ve önceki dönem fire < 0)
+    chronic_fire_results = []
+    for idx, row in df_mag.iterrows():
+        fire_m = row['Fire Miktarı'] if pd.notna(row['Fire Miktarı']) else 0
+        onceki_fire = row.get('Önceki Fire Miktarı', 0) or 0
+        
+        if fire_m < 0 and onceki_fire < 0:
+            fire_t = row.get('Fire Tutarı', 0) or 0
+            satis_fiyati = row.get('Satış Fiyatı', 0) or 0
+            onceki_fire_t = onceki_fire * satis_fiyati if satis_fiyati else 0
+            
+            chronic_fire_results.append({
+                'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                'Malzeme Adı': row.get('Malzeme Adı', ''),
+                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Bu Dönem Fire': fire_m,
+                'Bu Dönem Fire Tutarı': fire_t,
+                'Önceki Fire': onceki_fire,
+                'Önceki Fire Tutarı': onceki_fire_t,
+                'Toplam Fire Tutarı': fire_t + onceki_fire_t
+            })
+    
+    chronic_fire_df = pd.DataFrame(chronic_fire_results)
+    if len(chronic_fire_df) > 0:
+        chronic_fire_df = chronic_fire_df.sort_values('Toplam Fire Tutarı')
+    
+    # 4. SİGARA AÇIĞI
+    sigara_results = []
+    for idx, row in df_mag.iterrows():
+        urun_grubu = str(row.get('Ürün Grubu', '')).upper()
+        mal_grubu = str(row.get('Mal Grubu Tanımı', '')).upper()
+        malzeme = str(row.get('Malzeme Adı', '')).upper()
+        
+        is_cigarette = any(x in urun_grubu or x in mal_grubu or x in malzeme 
+                          for x in ['SİGARA', 'SIGARA', 'TOBACCO', 'TÜTÜN', 'MAKARON'])
+        
+        if is_cigarette:
+            fark_m = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+            kismi_m = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+            onceki_m = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
+            urun_toplam = fark_m + kismi_m + onceki_m
+            
+            if fark_m != 0 or kismi_m != 0 or onceki_m != 0:
+                sigara_results.append({
+                    'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                    'Malzeme Adı': row.get('Malzeme Adı', ''),
+                    'Fark': fark_m,
+                    'Kısmi': kismi_m,
+                    'Önceki': onceki_m,
+                    'Ürün Toplam': urun_toplam,
+                    'Risk': 'SİGARA'
+                })
+    
+    cigarette_df = pd.DataFrame(sigara_results)
+    if len(cigarette_df) > 0:
+        cigarette_df = cigarette_df.sort_values('Ürün Toplam')
+    
+    # 5. AİLE ANALİZİ (Benzer ürün grupları)
+    family_results = []
+    df_mag['_ilk2'] = df_mag['Malzeme Adı'].fillna('').str.split().str[:2].str.join(' ')
+    df_mag['_marka'] = df_mag['Malzeme Adı'].fillna('').str.split().str[-1]
+    
+    grouped = df_mag.groupby(['Mal Grubu Tanımı', '_ilk2', '_marka'])
+    for (mal_grubu, ilk2, marka), group in grouped:
+        if len(group) >= 2:
+            toplam_fark = group['Fark Miktarı'].fillna(0).sum()
+            toplam_kismi = group['Kısmi Envanter Miktarı'].fillna(0).sum()
+            toplam_onceki = group['Önceki Fark Miktarı'].fillna(0).sum()
+            aile_toplam = toplam_fark + toplam_kismi + toplam_onceki
+            
+            if aile_toplam < 0:
+                urunler = []
+                for _, r in group.iterrows():
+                    urun_adi = str(r.get('Malzeme Adı', ''))[:25]
+                    urun_fark = r['Fark Miktarı'] if pd.notna(r['Fark Miktarı']) else 0
+                    urunler.append(f"{urun_adi}({urun_fark})")
+                
+                family_results.append({
+                    'Mal Grubu': mal_grubu,
+                    'İlk 2 Kelime': ilk2,
+                    'Marka': marka,
+                    'Ürün Sayısı': len(group),
+                    'Toplam Fark': toplam_fark,
+                    'Toplam Kısmi': toplam_kismi,
+                    'Toplam Önceki': toplam_onceki,
+                    'AİLE TOPLAMI': aile_toplam,
+                    'Sonuç': 'AİLEDE NET AÇIK VAR',
+                    'Risk': 'ORTA',
+                    'Ürünler': ' | '.join(urunler[:5])
+                })
+    
+    family_df = pd.DataFrame(family_results)
+    if len(family_df) > 0:
+        family_df = family_df.sort_values('AİLE TOPLAMI')
+    
+    # 6. FİRE MANİPÜLASYONU (Fark > 0, Fire < 0)
+    fire_manip_results = []
+    for idx, row in df_mag.iterrows():
+        fark_m = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+        kismi_m = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+        fire_m = row['Fire Miktarı'] if pd.notna(row['Fire Miktarı']) else 0
+        
+        fark_kismi = fark_m + kismi_m
+        
+        if fark_kismi > 0 and fire_m < 0:
+            fire_manip_results.append({
+                'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                'Malzeme Adı': row.get('Malzeme Adı', ''),
+                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Fark Miktarı': fark_m,
+                'Kısmi Env.': kismi_m,
+                'Önceki Fark': row.get('Önceki Fark Miktarı', 0),
+                'Fark + Kısmi': fark_kismi,
+                'Fire Miktarı': fire_m,
+                'Fire Tutarı': row.get('Fire Tutarı', 0),
+                'Sonuç': 'FAZLA FİRE GİRİLMİŞ'
+            })
+    
+    fire_manip_df = pd.DataFrame(fire_manip_results)
+    if len(fire_manip_df) > 0:
+        fire_manip_df = fire_manip_df.sort_values('Fire Tutarı')
+    
+    # 7. KASA AKTİVİTESİ (10TL Ürünleri)
+    kasa_results = []
+    for idx, row in df_mag.iterrows():
+        kod_str = str(row.get('Malzeme Kodu', '')).replace('.0', '').strip()
+        
+        if kod_str in KASA_AKTIVITESI_KODLARI:
+            fark_m = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+            kismi_m = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+            toplam_m = fark_m + kismi_m
+            
+            fark_t = row.get('Fark Tutarı', 0) or 0
+            kismi_t = row.get('Kısmi Envanter Tutarı', 0) or 0
+            toplam_t = fark_t + kismi_t
+            
+            if toplam_m != 0:
+                kasa_results.append({
+                    'Malzeme Kodu': kod_str,
+                    'Malzeme Adı': row.get('Malzeme Adı', ''),
+                    'Fark': fark_m,
+                    'Kısmi': kismi_m,
+                    'TOPLAM': toplam_m,
+                    'Tutar': toplam_t,
+                    'Durum': 'FAZLA (+)' if toplam_m > 0 else 'AÇIK (-)'
+                })
+    
+    kasa_df = pd.DataFrame(kasa_results)
+    if len(kasa_df) > 0:
+        kasa_df = kasa_df.sort_values('TOPLAM', ascending=False)
+    
+    # 8. EN RİSKLİ 20
+    top20_results = []
+    df_sorted = df_mag.nsmallest(20, 'Fark Tutarı')
+    for idx, row in df_sorted.iterrows():
+        fark_m = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+        kismi_m = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+        onceki_m = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
+        toplam_m = fark_m + kismi_m + onceki_m
+        iptal = row.get('İptal Satır Sayısı', 0) or 0
+        fire_m = row.get('Fire Miktarı', 0) or 0
+        fire_t = row.get('Fire Tutarı', 0) or 0
+        fark_t = row.get('Fark Tutarı', 0) or 0
+        satis_fiyati = row.get('Satış Fiyatı', 0) or 0
+        
+        # Risk türü belirleme
+        if satis_fiyati >= 100 and toplam_m < 0:
+            risk_turu = "İÇ HIRSIZLIK"
+            aksiyon = "Kasa kamera incelemesi"
+        elif fark_m < 0 and onceki_m < 0:
+            risk_turu = "KRONİK AÇIK"
+            aksiyon = "Raf kontrolü, Sayım eğitimi"
+        elif fark_m > 0 and fire_m < 0:
+            risk_turu = "OPERASYONEL"
+            aksiyon = "Fire kayıt kontrolü"
+        else:
+            risk_turu = "DIŞ HIRSIZLIK/SAYIM"
+            aksiyon = "Sayım ve kod kontrolü"
+        
+        top20_results.append({
+            'Sıra': len(top20_results) + 1,
+            'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+            'Malzeme Adı': row.get('Malzeme Adı', ''),
+            'Fark Mik.': fark_m,
+            'Kısmi': kismi_m,
+            'Önceki': onceki_m,
+            'TOPLAM': toplam_m,
+            'İptal': iptal,
+            'Fire': fire_m,
+            'Fire Tutarı': fire_t,
+            'Fark Tutarı': fark_t,
+            'Risk Türü': risk_turu,
+            'Aksiyon': aksiyon
+        })
+    
+    top20_df = pd.DataFrame(top20_results)
+    
+    # ==================== EXCEL OLUŞTURMA ====================
     
     # ===== ÖZET SAYFASI =====
     ws = wb.active
@@ -563,235 +861,159 @@ def create_store_report(store_row, params, df_all=None):
     ws['A1'].font = title_font
     ws['A2'] = f"Dönem: {params.get('donem', '')} | Tarih: {params.get('tarih', '')}"
     
-    ws['A4'] = "GENEL METRİKLER"
+    ws['A4'] = "GENEL METRIKLER"
     ws['A4'].font = subtitle_font
     
     metrics = [
-        ("Toplam Satış", f"{store_row['Satış']:,.0f} TL"),
-        ("Fark (Fark+Kısmi)", f"{store_row['Fark']:,.0f} TL"),
-        ("Fire", f"{store_row['Fire']:,.0f} TL"),
-        ("Toplam Açık", f"{store_row['Toplam Açık']:,.0f} TL"),
-        ("Fark Oranı", f"%{store_row['Fark %']:.2f}"),
-        ("Fire Oranı", f"%{store_row['Fire %']:.2f}"),
-        ("Toplam Oran", f"%{store_row['Toplam %']:.2f}"),
+        ('Toplam Ürün', len(df_mag)),
+        ('Açık Veren Ürün', len(df_mag[df_mag['Fark Miktarı'] < 0])),
+        ('Toplam Satış', f"{toplam_satis:,.0f} TL"),
+        ('Fark (Fark+Kısmi)', f"{fark:,.0f} TL"),
+        ('Fire', f"{fire_tutari:,.0f} TL"),
+        ('Toplam Açık', f"{toplam_acik:,.0f} TL"),
+        ('Fark Oranı', f"%{fark_oran:.2f}"),
+        ('Fire Oranı', f"%{fire_oran:.2f}"),
+        ('Toplam Oran', f"%{toplam_oran:.2f}"),
     ]
     
     for i, (label, value) in enumerate(metrics, start=5):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
-        ws[f'A{i}'].border = border
-        ws[f'B{i}'].border = border
     
-    ws['A13'] = "RİSK DEĞERLENDİRMESİ"
-    ws['A13'].font = subtitle_font
+    ws['A15'] = "RİSK DAĞILIMI"
+    ws['A15'].font = subtitle_font
     
-    risk_metrics = [
-        ("Risk Seviyesi", store_row['Risk']),
-        ("Risk Puanı", f"{store_row['Risk Puan']:.0f}"),
-        ("Risk Nedenleri", store_row['Nedenler']),
-        ("İç Hırsızlık Riski", f"{store_row['İç Hırs.']} ürün"),
-        ("Kronik Açık", f"{store_row['Kronik']} ürün"),
-        ("Sigara Açığı", f"{store_row['Sigara']} adet"),
-        ("10TL Ürünleri", f"{store_row['10TL Adet']:.0f} adet / {store_row['10TL Tutar']:,.0f} TL"),
+    risks = [
+        ('İç Hırsızlık (≥100TL)', len(internal_df)),
+        ('Kronik Açık', len(chronic_df)),
+        ('Kronik Fire', len(chronic_fire_df)),
+        ('Sigara Açığı', len(cigarette_df)),
+        ('Fire Manipülasyonu', len(fire_manip_df)),
     ]
     
-    for i, (label, value) in enumerate(risk_metrics, start=14):
+    for i, (label, value) in enumerate(risks, start=16):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
-        ws[f'A{i}'].border = border
-        ws[f'B{i}'].border = border
-    
-    ws['A21'] = "GÜNLÜK METRİKLER"
-    ws['A21'].font = subtitle_font
-    
-    daily_metrics = [
-        ("Gün Sayısı", f"{store_row.get('Gün', 0):.0f}"),
-        ("Günlük Fark", f"{store_row.get('Günlük Fark', 0):,.0f} TL"),
-        ("Günlük Fire", f"{store_row.get('Günlük Fire', 0):,.0f} TL"),
-    ]
-    
-    for i, (label, value) in enumerate(daily_metrics, start=22):
-        ws[f'A{i}'] = label
-        ws[f'B{i}'] = value
-        ws[f'A{i}'].border = border
-        ws[f'B{i}'].border = border
+        if 'Sigara' in label and value > 0:
+            ws[f'B{i}'].fill = red_fill
+            ws[f'B{i}'].font = Font(bold=True, color='FFFFFF')
     
     ws.column_dimensions['A'].width = 25
-    ws.column_dimensions['B'].width = 35
+    ws.column_dimensions['B'].width = 20
     
-    # ===== DETAY SAYFALARI (eğer df_all varsa) =====
-    if df_all is not None:
-        df_mag = df_all[df_all['Mağaza Kodu'] == mag_kod].copy()
+    # ===== EN RİSKLİ 20 =====
+    if len(top20_df) > 0:
+        ws2 = wb.create_sheet("EN RİSKLİ 20")
+        for col, h in enumerate(top20_df.columns, 1):
+            cell = ws2.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = border
         
-        if len(df_mag) > 0:
-            # EN RİSKLİ 20 - Fark Tutarı en düşük olanlar
-            top20_df = df_mag.nsmallest(20, 'Fark Tutarı')[['Malzeme Kodu', 'Malzeme Adı', 'Fark Miktarı', 'Fark Tutarı', 'Fire Tutarı', 'Satış Fiyatı']].copy()
-            
-            if len(top20_df) > 0:
-                ws_top = wb.create_sheet("EN RİSKLİ 20")
-                ws_top['A1'] = "En Çok Açık Veren 20 Ürün"
-                ws_top['A1'].font = subtitle_font
-                
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark Miktarı', 'Fark Tutarı', 'Fire Tutarı', 'Satış Fiyatı']
-                for col, h in enumerate(headers, 1):
-                    cell = ws_top.cell(row=3, column=col, value=h)
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.border = border
-                
-                for r_idx, (_, row) in enumerate(top20_df.iterrows(), 4):
-                    for c_idx, col in enumerate(headers, 1):
-                        cell = ws_top.cell(row=r_idx, column=c_idx, value=row[col])
-                        cell.border = border
-            
-            # İç Hırsızlık Analizi
-            internal_results = []
-            for idx, row in df_mag.iterrows():
-                satis_fiyati = row.get('Satış Fiyatı', 0) or 0
-                fark = row['Fark Miktarı']
-                if satis_fiyati >= 100 and fark <= 0:
-                    internal_results.append({
-                        'Malzeme Kodu': row.get('Malzeme Kodu', ''),
-                        'Malzeme Adı': row.get('Malzeme Adı', ''),
-                        'Satış Fiyatı': satis_fiyati,
-                        'Fark Miktarı': fark,
-                        'Fark Tutarı': row.get('Fark Tutarı', 0),
-                    })
-            
-            if internal_results:
-                ws2 = wb.create_sheet("İÇ HIRSIZLIK")
-                ws2['A1'] = "Satış Fiyatı ≥ 100 TL | Fark ≤ 0"
-                ws2['A1'].font = subtitle_font
-                
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Satış Fiyatı', 'Fark Miktarı', 'Fark Tutarı']
-                for col, h in enumerate(headers, 1):
-                    cell = ws2.cell(row=3, column=col, value=h)
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.border = border
-                
-                for r_idx, item in enumerate(sorted(internal_results, key=lambda x: x['Fark Tutarı'])[:100], 4):
-                    for c_idx, key in enumerate(headers, 1):
-                        cell = ws2.cell(row=r_idx, column=c_idx, value=item[key])
-                        cell.border = border
-            
-            # Kronik Açık
-            chronic_results = []
-            for idx, row in df_mag.iterrows():
-                fark = row['Fark Miktarı']
-                onceki = row.get('Önceki Fark Miktarı', 0) or 0
-                if fark < 0 and onceki < 0:
-                    chronic_results.append({
-                        'Malzeme Kodu': row.get('Malzeme Kodu', ''),
-                        'Malzeme Adı': row.get('Malzeme Adı', ''),
-                        'Bu Dönem Fark': fark,
-                        'Önceki Dönem': onceki,
-                        'Toplam': fark + onceki,
-                    })
-            
-            if chronic_results:
-                ws3 = wb.create_sheet("KRONİK AÇIK")
-                ws3['A1'] = "Her iki dönemde de Fark < 0"
-                ws3['A1'].font = subtitle_font
-                
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Bu Dönem Fark', 'Önceki Dönem', 'Toplam']
-                for col, h in enumerate(headers, 1):
-                    cell = ws3.cell(row=3, column=col, value=h)
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.border = border
-                
-                for r_idx, item in enumerate(sorted(chronic_results, key=lambda x: x['Toplam'])[:100], 4):
-                    for c_idx, key in enumerate(headers, 1):
-                        cell = ws3.cell(row=r_idx, column=c_idx, value=item[key])
-                        cell.border = border
-            
-            # Sigara Açığı - Fark + Kısmi (Önceki dahil değil)
-            sigara_results = []
-            toplam_fark = 0
-            toplam_kismi = 0
-            
-            for idx, row in df_mag.iterrows():
-                urun_grubu = str(row.get('Ürün Grubu', '')).upper()
-                mal_grubu = str(row.get('Mal Grubu Tanımı', '')).upper()
-                malzeme = str(row.get('Malzeme Adı', '')).upper()
-                
-                is_cigarette = any(x in urun_grubu or x in mal_grubu or x in malzeme 
-                                  for x in ['SİGARA', 'SIGARA', 'TOBACCO', 'TÜTÜN'])
-                
-                if is_cigarette:
-                    fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
-                    kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
-                    
-                    toplam_fark += fark
-                    toplam_kismi += kismi
-                    
-                    if fark != 0 or kismi != 0:
-                        sigara_results.append({
-                            'Malzeme Kodu': row.get('Malzeme Kodu', ''),
-                            'Malzeme Adı': row.get('Malzeme Adı', ''),
-                            'Fark': fark,
-                            'Kısmi': kismi,
-                            'Toplam': fark + kismi,
-                        })
-            
-            net_sigara = toplam_fark + toplam_kismi
-            
-            if sigara_results or net_sigara < 0:
-                ws4 = wb.create_sheet("SİGARA AÇIĞI")
-                ws4['A1'] = f"⚠️ SİGARA AÇIĞI - NET TOPLAM: {net_sigara:.0f}"
-                ws4['A1'].font = Font(bold=True, size=12, color='FF0000' if net_sigara < 0 else '000000')
-                
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark', 'Kısmi', 'Toplam']
-                for col, h in enumerate(headers, 1):
-                    cell = ws4.cell(row=3, column=col, value=h)
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.border = border
-                
-                for r_idx, item in enumerate(sigara_results, 4):
-                    for c_idx, key in enumerate(headers, 1):
-                        cell = ws4.cell(row=r_idx, column=c_idx, value=item[key])
-                        cell.border = border
-            
-            # 10TL Kasa Aktivitesi - Fark + Kısmi (Önceki dahil değil)
-            kasa_results = []
-            for idx, row in df_mag.iterrows():
-                kod_str = str(row.get('Malzeme Kodu', '')).replace('.0', '').strip()
-                
-                if kod_str in KASA_AKTIVITESI_KODLARI:
-                    fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
-                    kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
-                    toplam = fark + kismi  # Önceki dahil değil!
-                    
-                    if toplam != 0:
-                        kasa_results.append({
-                            'Malzeme Kodu': row.get('Malzeme Kodu', ''),
-                            'Malzeme Adı': row.get('Malzeme Adı', ''),
-                            'Fark': fark,
-                            'Kısmi': kismi,
-                            'Toplam': toplam,
-                            'Durum': 'FAZLA (+)' if toplam > 0 else 'AÇIK (-)'
-                        })
-            
-            if kasa_results:
-                ws5 = wb.create_sheet("KASA AKTİVİTESİ")
-                ws5['A1'] = "⚠️ KASA AKTİVİTESİ ÜRÜNLERİ (10TL) - FAZLA (+) OLANLAR MANİPÜLASYON RİSKİ!"
-                ws5['A1'].font = Font(bold=True, size=11, color='FF0000')
-                
-                headers = ['Malzeme Kodu', 'Malzeme Adı', 'Fark', 'Kısmi', 'Toplam', 'Durum']
-                for col, h in enumerate(headers, 1):
-                    cell = ws5.cell(row=3, column=col, value=h)
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.border = border
-                
-                for r_idx, item in enumerate(sorted(kasa_results, key=lambda x: -x['Toplam']), 4):
-                    for c_idx, key in enumerate(headers, 1):
-                        cell = ws5.cell(row=r_idx, column=c_idx, value=item[key])
-                        cell.border = border
-                        if key == 'Toplam' and item['Toplam'] > 0:
-                            cell.fill = PatternFill('solid', fgColor='FFCCCC')
+        for r_idx, row in enumerate(top20_df.values, 2):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws2.cell(row=r_idx, column=c_idx, value=val)
+                cell.border = border
+    
+    # ===== KRONİK AÇIK =====
+    if len(chronic_df) > 0:
+        ws3 = wb.create_sheet("KRONİK AÇIK")
+        for col, h in enumerate(chronic_df.columns, 1):
+            cell = ws3.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(chronic_df.head(100).values, 2):
+            for c_idx, val in enumerate(row, 1):
+                ws3.cell(row=r_idx, column=c_idx, value=val)
+    
+    # ===== KRONİK FİRE =====
+    if len(chronic_fire_df) > 0:
+        ws4 = wb.create_sheet("KRONİK FİRE")
+        for col, h in enumerate(chronic_fire_df.columns, 1):
+            cell = ws4.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(chronic_fire_df.head(100).values, 2):
+            for c_idx, val in enumerate(row, 1):
+                ws4.cell(row=r_idx, column=c_idx, value=val)
+    
+    # ===== SİGARA AÇIĞI =====
+    ws5 = wb.create_sheet("SİGARA AÇIĞI")
+    ws5['A1'] = "⚠️ SİGARA AÇIĞI - YÜKSEK RİSK"
+    ws5['A1'].font = Font(bold=True, size=14, color='FF0000')
+    
+    if len(cigarette_df) > 0:
+        for col, h in enumerate(cigarette_df.columns, 1):
+            cell = ws5.cell(row=3, column=col, value=h)
+            cell.font = header_font
+            cell.fill = red_fill
+        
+        for r_idx, row in enumerate(cigarette_df.values, 4):
+            for c_idx, val in enumerate(row, 1):
+                ws5.cell(row=r_idx, column=c_idx, value=val)
+    
+    # ===== İÇ HIRSIZLIK =====
+    if len(internal_df) > 0:
+        ws6 = wb.create_sheet("İÇ HIRSIZLIK")
+        ws6['A1'] = "Satış Fiyatı ≥ 100 TL | Fark büyüdükçe risk AZALIR"
+        ws6['A1'].font = subtitle_font
+        
+        for col, h in enumerate(internal_df.columns, 1):
+            cell = ws6.cell(row=3, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(internal_df.head(100).values, 4):
+            for c_idx, val in enumerate(row, 1):
+                ws6.cell(row=r_idx, column=c_idx, value=val)
+    
+    # ===== AİLE ANALİZİ =====
+    if len(family_df) > 0:
+        ws7 = wb.create_sheet("AİLE ANALİZİ")
+        ws7['A1'] = "Benzer Ürün Ailesi - Kod Karışıklığı Tespiti"
+        ws7['A1'].font = subtitle_font
+        
+        for col, h in enumerate(family_df.columns, 1):
+            cell = ws7.cell(row=3, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(family_df.head(100).values, 4):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws7.cell(row=r_idx, column=c_idx, value=val)
+                cell.alignment = wrap_alignment
+    
+    # ===== FİRE MANİPÜLASYONU =====
+    if len(fire_manip_df) > 0:
+        ws8 = wb.create_sheet("FİRE MANİPÜLASYONU")
+        for col, h in enumerate(fire_manip_df.columns, 1):
+            cell = ws8.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(fire_manip_df.head(100).values, 2):
+            for c_idx, val in enumerate(row, 1):
+                ws8.cell(row=r_idx, column=c_idx, value=val)
+    
+    # ===== KASA AKTİVİTESİ =====
+    if len(kasa_df) > 0:
+        ws9 = wb.create_sheet("KASA AKTİVİTESİ")
+        ws9['A1'] = "⚠️ KASA AKTİVİTESİ ÜRÜNLERİ - FAZLA (+) OLANLAR MANİPÜLASYON RİSKİ!"
+        ws9['A1'].font = Font(bold=True, size=12, color='FF0000')
+        
+        for col, h in enumerate(kasa_df.columns, 1):
+            cell = ws9.cell(row=3, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(kasa_df.values, 4):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws9.cell(row=r_idx, column=c_idx, value=val)
+                # FAZLA olanları kırmızı yap
+                if kasa_df.columns[c_idx-1] == 'TOPLAM' and val > 0:
+                    cell.fill = PatternFill('solid', fgColor='FFCCCC')
     
     output = BytesIO()
     wb.save(output)
