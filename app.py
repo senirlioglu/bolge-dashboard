@@ -6,9 +6,20 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import datetime
+from supabase import create_client, Client
 
 # Sayfa ayarı
 st.set_page_config(page_title="Bölge Dashboard", layout="wide", page_icon="🌍")
+
+# ==================== SUPABASE BAĞLANTISI ====================
+SUPABASE_URL = "https://tlcgcdiycgfxpxwzkwuf.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRsY2djZGl5Y2dmeHB4d3prd3VmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU2NDgwMjksImV4cCI6MjA4MTIyNDAyOX0.4GnWTvUmdLzqcP0v8MAqaNUQkYgk0S8qrw6nSPsz-t4"
+
+@st.cache_resource
+def get_supabase_client():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase: Client = get_supabase_client()
 
 # ==================== GİRİŞ SİSTEMİ ====================
 USERS = {
@@ -49,6 +60,119 @@ def login():
         st.stop()
 
 login()
+
+# ==================== SUPABASE FONKSİYONLARI ====================
+
+def get_available_periods_from_supabase():
+    """Mevcut dönemleri al"""
+    try:
+        result = supabase.table('envanter_veri').select('envanter_donemi').execute()
+        if result.data:
+            periods = list(set([r['envanter_donemi'] for r in result.data if r['envanter_donemi']]))
+            return sorted(periods, reverse=True)
+    except:
+        pass
+    return []
+
+
+def get_available_sms_from_supabase():
+    """Mevcut Satış Müdürlerini al"""
+    try:
+        result = supabase.table('envanter_veri').select('satis_muduru').execute()
+        if result.data:
+            sms = list(set([r['satis_muduru'] for r in result.data if r['satis_muduru']]))
+            return sorted(sms)
+    except:
+        pass
+    return []
+
+
+def get_data_from_supabase(satis_muduru=None, donemler=None):
+    """Supabase'den veri çek ve DataFrame'e çevir - Pagination ile tüm veriyi al"""
+    try:
+        all_data = []
+        batch_size = 1000
+        offset = 0
+        
+        while True:
+            query = supabase.table('envanter_veri').select('*')
+            
+            if satis_muduru:
+                query = query.eq('satis_muduru', satis_muduru)
+            
+            if donemler and len(donemler) > 0:
+                query = query.in_('envanter_donemi', donemler)
+            
+            query = query.range(offset, offset + batch_size - 1)
+            result = query.execute()
+            
+            if not result.data or len(result.data) == 0:
+                break
+            
+            all_data.extend(result.data)
+            
+            if len(result.data) < batch_size:
+                break
+            
+            offset += batch_size
+        
+        if not all_data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(all_data)
+        
+        # Sütun isimlerini geri çevir
+        reverse_mapping = {
+            'magaza_kodu': 'Mağaza Kodu',
+            'magaza_tanim': 'Mağaza Adı',
+            'satis_muduru': 'Satış Müdürü',
+            'bolge_sorumlusu': 'Bölge Sorumlusu',
+            'depolama_kosulu_grubu': 'Depolama Koşulu Grubu',
+            'depolama_kosulu': 'Depolama Koşulu',
+            'envanter_donemi': 'Envanter Dönemi',
+            'envanter_tarihi': 'Envanter Tarihi',
+            'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
+            'urun_grubu_kodu': 'Ürün Grubu Kodu',
+            'urun_grubu_tanimi': 'Ürün Grubu Tanımı',
+            'mal_grubu_kodu': 'Mal Grubu Kodu',
+            'mal_grubu_tanimi': 'Mal Grubu Tanımı',
+            'malzeme_kodu': 'Malzeme Kodu',
+            'malzeme_tanimi': 'Malzeme Adı',
+            'satis_fiyati': 'Satış Fiyatı',
+            'sayim_miktari': 'Sayım Miktarı',
+            'sayim_tutari': 'Sayım Tutarı',
+            'kaydi_miktar': 'Kaydi Miktar',
+            'kaydi_tutar': 'Kaydi Tutar',
+            'fark_miktari': 'Fark Miktarı',
+            'fark_tutari': 'Fark Tutarı',
+            'kismi_envanter_miktari': 'Kısmi Envanter Miktarı',
+            'kismi_envanter_tutari': 'Kısmi Envanter Tutarı',
+            'fire_miktari': 'Fire Miktarı',
+            'fire_tutari': 'Fire Tutarı',
+            'onceki_fark_miktari': 'Önceki Fark Miktarı',
+            'onceki_fark_tutari': 'Önceki Fark Tutarı',
+            'onceki_fire_miktari': 'Önceki Fire Miktarı',
+            'onceki_fire_tutari': 'Önceki Fire Tutarı',
+            'satis_miktari': 'Satış Miktarı',
+            'satis_hasilati': 'Satış Tutarı',
+            'iade_miktari': 'İade Miktarı',
+            'iade_tutari': 'İade Tutarı',
+            'iptal_fisteki_miktar': 'İptal Fişteki Miktar',
+            'iptal_fis_tutari': 'İptal Fiş Tutarı',
+            'iptal_gp_miktari': 'İptal GP Miktarı',
+            'iptal_gp_tutari': 'İptal GP Tutarı',
+            'iptal_satir_miktari': 'İptal Satır Miktarı',
+            'iptal_satir_tutari': 'İptal Satır Tutarı',
+        }
+        
+        df = df.rename(columns=reverse_mapping)
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Supabase hatası: {str(e)}")
+        return pd.DataFrame()
+
 
 # ==================== ANA UYGULAMA ====================
 
@@ -1201,53 +1325,228 @@ def create_excel_report(store_df, sm_df, bs_df, params):
 
 st.title("🌍 Bölge Dashboard")
 
-uploaded_file = st.file_uploader("📁 Envanter Excel Yükle", type=['xlsx', 'xls'])
+# Mod seçimi
+data_source = st.radio("📊 Veri Kaynağı", ["📁 Excel Yükle", "☁️ Supabase"], horizontal=True)
 
-if uploaded_file is not None:
-    try:
-        # Dosyayı oku
-        xl = pd.ExcelFile(uploaded_file)
-        sheet_names = xl.sheet_names
-        
-        best_sheet = None
-        max_cols = 0
-        for sheet in sheet_names:
-            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
-            if len(temp_df.columns) > max_cols:
-                max_cols = len(temp_df.columns)
-                best_sheet = sheet
-        
-        df_raw = pd.read_excel(uploaded_file, sheet_name=best_sheet)
-        st.success(f"✅ {len(df_raw):,} satır | {len(df_raw.columns)} sütun")
-        
-        df = analyze_inventory(df_raw)
-        
-        params = {
-            'donem': str(df['Envanter Dönemi'].iloc[0]) if 'Envanter Dönemi' in df.columns else '',
-            'tarih': str(df['Envanter Tarihi'].iloc[0])[:10] if 'Envanter Tarihi' in df.columns else '',
-        }
-        
-        # Analiz
-        with st.spinner("🔄 Analiz ediliyor..."):
-            store_df, bolge_ort = analyze_all_stores(df)
-            sm_df = aggregate_by_group(store_df, 'SM')
-            bs_df = aggregate_by_group(store_df, 'BS')
-        
-        if len(store_df) == 0:
-            st.error("Analiz edilecek mağaza bulunamadı!")
-        else:
-            # Bölge toplamları
-            toplam_satis = store_df['Satış'].sum()
-            toplam_fark = store_df['Fark'].sum()  # Fark + Kısmi
-            toplam_fire = store_df['Fire'].sum()
-            toplam_acik = store_df['Toplam Açık'].sum()  # Fark + Kısmi + Fire
-            toplam_gun = store_df['Gün'].sum()
+if data_source == "☁️ Supabase":
+    # Supabase'den veri çek
+    col_sm, col_donem = st.columns([1, 1])
+    
+    available_sms = get_available_sms_from_supabase()
+    available_periods = get_available_periods_from_supabase()
+    
+    with col_sm:
+        if available_sms:
+            sm_options = ["📊 TÜMÜ (Bölge)"] + available_sms
+            selected_sm_option = st.selectbox("👔 Satış Müdürü", sm_options)
             
-            # Oranlar
-            fark_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
-            fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
-            toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
-            gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
+            if selected_sm_option == "📊 TÜMÜ (Bölge)":
+                selected_sm = None
+            else:
+                selected_sm = selected_sm_option
+        else:
+            st.warning("Henüz veri yüklenmemiş")
+            selected_sm = None
+            selected_sm_option = None
+    
+    with col_donem:
+        if available_periods:
+            selected_periods = st.multiselect("📅 Dönem", available_periods, default=available_periods[:1])
+        else:
+            selected_periods = []
+    
+    if selected_sm_option and selected_periods:
+        with st.spinner("Veriler yükleniyor..."):
+            df_raw = get_data_from_supabase(satis_muduru=selected_sm, donemler=selected_periods)
+        
+        if len(df_raw) == 0:
+            st.warning("Seçilen kriterlere uygun veri bulunamadı")
+        else:
+            st.success(f"✅ {len(df_raw):,} satır yüklendi")
+            
+            df = analyze_inventory(df_raw)
+            
+            params = {
+                'donem': ', '.join(selected_periods),
+                'tarih': datetime.now().strftime('%Y-%m-%d'),
+            }
+            
+            # Analiz
+            with st.spinner("🔄 Analiz ediliyor..."):
+                store_df, bolge_ort = analyze_all_stores(df)
+                sm_df = aggregate_by_group(store_df, 'SM')
+                bs_df = aggregate_by_group(store_df, 'BS')
+            
+            if len(store_df) == 0:
+                st.error("Analiz edilecek mağaza bulunamadı!")
+            else:
+                # Bölge toplamları
+                toplam_satis = store_df['Satış'].sum()
+                toplam_fark = store_df['Fark'].sum()
+                toplam_fire = store_df['Fire'].sum()
+                toplam_acik = store_df['Toplam Açık'].sum()
+                toplam_gun = store_df['Gün'].sum()
+                
+                # Oranlar
+                fark_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+                fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+                toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+                gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
+                gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
+                
+                # Risk sayıları
+                kritik_sayisi = len(store_df[store_df['Risk'].str.contains('KRİTİK')])
+                riskli_sayisi = len(store_df[store_df['Risk'].str.contains('RİSKLİ')])
+                dikkat_sayisi = len(store_df[store_df['Risk'].str.contains('DİKKAT')])
+                temiz_sayisi = len(store_df[store_df['Risk'].str.contains('TEMİZ')])
+                
+                # 10TL Özet
+                toplam_10tl_adet = store_df['10TL Adet'].sum()
+                toplam_10tl_tutar = store_df['10TL Tutar'].sum()
+                
+                # ========== GÖRÜNÜM ==========
+                st.markdown("---")
+                display_sm_name = selected_sm if selected_sm else "Bölge"
+                st.subheader(f"📊 {display_sm_name} - {len(store_df)} Mağaza")
+                
+                # Üst metrikler
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("💰 Satış", f"{toplam_satis/1e6:.1f}M TL")
+                col2.metric("📉 Fark", f"%{fark_oran:.2f}", f"{toplam_fark/1000:.0f}K | Gün: {gunluk_fark/1000:.1f}K")
+                col3.metric("🔥 Fire", f"%{fire_oran:.2f}", f"{toplam_fire/1000:.0f}K | Gün: {gunluk_fire/1000:.1f}K")
+                col4.metric("📊 Toplam", f"%{toplam_oran:.2f}", f"{toplam_acik/1000:.0f}K")
+                
+                if toplam_10tl_adet != 0:
+                    col5.metric("💰 10 TL", f"{toplam_10tl_adet:+.0f} / {toplam_10tl_tutar:,.0f}₺", 
+                               "FAZLA" if toplam_10tl_adet > 0 else "AÇIK")
+                else:
+                    col5.metric("💰 10 TL", "0", "TAMAM")
+                
+                # Risk dağılımı
+                st.markdown("### 📊 Risk Dağılımı")
+                r1, r2, r3, r4 = st.columns(4)
+                r1.markdown(f'<div class="risk-kritik">🔴 KRİTİK: {kritik_sayisi}</div>', unsafe_allow_html=True)
+                r2.markdown(f'<div class="risk-riskli">🟠 RİSKLİ: {riskli_sayisi}</div>', unsafe_allow_html=True)
+                r3.markdown(f'<div class="risk-dikkat">🟡 DİKKAT: {dikkat_sayisi}</div>', unsafe_allow_html=True)
+                r4.markdown(f'<div class="risk-temiz">🟢 TEMİZ: {temiz_sayisi}</div>', unsafe_allow_html=True)
+                
+                # Sekmeler
+                tabs = st.tabs(["👔 SM Özet", "📋 BS Özet", "🏪 Mağazalar", "📊 Top 10", "📥 İndir"])
+                
+                with tabs[0]:
+                    st.subheader("👔 Satış Müdürü Bazlı Özet")
+                    if len(sm_df) > 0:
+                        for _, row in sm_df.iterrows():
+                            with st.expander(f"**{row['SM']}** - {row['Mağaza Sayısı']} Mağaza | Kayıp: %{row['Toplam %']:.1f}"):
+                                c1, c2, c3, c4, c5 = st.columns(5)
+                                c1.metric("Satış", f"{row['Satış']/1e6:.1f}M")
+                                c2.metric("Fark", f"{row['Fark']/1000:.0f}K", f"%{row['Fark %']:.1f}")
+                                c3.metric("Fire", f"{row['Fire']/1000:.0f}K", f"%{row['Fire %']:.1f}")
+                                c4.metric("🚬 Sigara", f"{row['Sigara']:.0f}")
+                                c5.metric("🔒 İç Hırs.", f"{row['İç Hırs.']:.0f}")
+                    else:
+                        st.info("SM verisi bulunamadı")
+                
+                with tabs[1]:
+                    st.subheader("📋 Bölge Sorumlusu Bazlı Özet")
+                    if len(bs_df) > 0:
+                        for _, row in bs_df.iterrows():
+                            col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 1, 1, 1, 1])
+                            col1.write(f"**{row['BS']}** ({row['Mağaza Sayısı']} mağ.)")
+                            col2.write(f"Satış: {row['Satış']/1e6:.1f}M")
+                            col3.write(f"Fark: {row['Fark']/1000:.0f}K")
+                            col4.write(f"Fire: {row['Fire']/1000:.0f}K")
+                            col5.write(f"Kayıp: %{row['Toplam %']:.1f}")
+                            col6.write(f"🚬{row['Sigara']:.0f} 🔒{row['İç Hırs.']:.0f}")
+                    else:
+                        st.info("BS verisi bulunamadı")
+                
+                with tabs[2]:
+                    st.subheader("🏪 Tüm Mağazalar")
+                    display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'SM', 'BS', 'Satış', 'Fark', 'Fark %', 
+                                   'Fire', 'Fire %', 'Toplam Açık', 'Toplam %', 'Sigara', 'İç Hırs.', 'Risk Puan', 'Risk']
+                    display_cols = [c for c in display_cols if c in store_df.columns]
+                    st.dataframe(store_df[display_cols].sort_values('Risk Puan', ascending=False), 
+                                use_container_width=True, height=500)
+                
+                with tabs[3]:
+                    st.subheader("📊 En Riskli 10 Mağaza")
+                    top10 = store_df.nlargest(10, 'Risk Puan')
+                    for _, row in top10.iterrows():
+                        risk_text = row.get('Risk', '')
+                        if 'KRİTİK' in str(risk_text):
+                            st.error(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}** | Risk: {row['Risk Puan']:.0f}\n\n"
+                                    f"Fark: {row['Fark']/1000:.0f}K | Fire: {row['Fire']/1000:.0f}K | Kayıp: %{row['Toplam %']:.1f}\n\n"
+                                    f"🚬 Sigara: {row['Sigara']:.0f} | 🔒 İç Hırs: {row['İç Hırs.']:.0f}")
+                        elif 'RİSKLİ' in str(risk_text):
+                            st.warning(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}** | Risk: {row['Risk Puan']:.0f}\n\n"
+                                      f"Fark: {row['Fark']/1000:.0f}K | Fire: {row['Fire']/1000:.0f}K | Kayıp: %{row['Toplam %']:.1f}\n\n"
+                                      f"🚬 Sigara: {row['Sigara']:.0f} | 🔒 İç Hırs: {row['İç Hırs.']:.0f}")
+                        else:
+                            st.info(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}** | Risk: {row['Risk Puan']:.0f}\n\n"
+                                   f"Fark: {row['Fark']/1000:.0f}K | Fire: {row['Fire']/1000:.0f}K | Kayıp: %{row['Toplam %']:.1f}")
+                
+                with tabs[4]:
+                    st.subheader("📥 Rapor İndir")
+                    
+                    excel_data = create_dashboard_excel(store_df, sm_df, bs_df, params)
+                    
+                    st.download_button(
+                        label="📥 Bölge Dashboard Excel",
+                        data=excel_data,
+                        file_name=f"BOLGE_DASHBOARD_{params.get('donem', '')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+else:
+    # Excel yükleme modu
+    uploaded_file = st.file_uploader("📁 Envanter Excel Yükle", type=['xlsx', 'xls'])
+    
+    if uploaded_file is not None:
+        try:
+            # Dosyayı oku
+            xl = pd.ExcelFile(uploaded_file)
+            sheet_names = xl.sheet_names
+            
+            best_sheet = None
+            max_cols = 0
+            for sheet in sheet_names:
+                temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
+                if len(temp_df.columns) > max_cols:
+                    max_cols = len(temp_df.columns)
+                    best_sheet = sheet
+            
+            df_raw = pd.read_excel(uploaded_file, sheet_name=best_sheet)
+            st.success(f"✅ {len(df_raw):,} satır | {len(df_raw.columns)} sütun")
+            
+            df = analyze_inventory(df_raw)
+            
+            params = {
+                'donem': str(df['Envanter Dönemi'].iloc[0]) if 'Envanter Dönemi' in df.columns else '',
+                'tarih': str(df['Envanter Tarihi'].iloc[0])[:10] if 'Envanter Tarihi' in df.columns else '',
+            }
+            
+            # Analiz
+            with st.spinner("🔄 Analiz ediliyor..."):
+                store_df, bolge_ort = analyze_all_stores(df)
+                sm_df = aggregate_by_group(store_df, 'SM')
+                bs_df = aggregate_by_group(store_df, 'BS')
+            
+            if len(store_df) == 0:
+                st.error("Analiz edilecek mağaza bulunamadı!")
+            else:
+                # Bölge toplamları
+                toplam_satis = store_df['Satış'].sum()
+                toplam_fark = store_df['Fark'].sum()  # Fark + Kısmi
+                toplam_fire = store_df['Fire'].sum()
+                toplam_acik = store_df['Toplam Açık'].sum()  # Fark + Kısmi + Fire
+                toplam_gun = store_df['Gün'].sum()
+                
+                # Oranlar
+                fark_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+                fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+                toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+                gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
             gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
             
             # Risk sayıları
@@ -1481,31 +1780,31 @@ if uploaded_file is not None:
                 - 👤 BS Bazlı Analiz  
                 - 🏪 Mağaza Detay (Risk puanına göre sıralı)
                 """)
+        
+        except Exception as e:
+            st.error(f"Hata: {str(e)}")
+            st.exception(e)
     
-    except Exception as e:
-        st.error(f"Hata: {str(e)}")
-        st.exception(e)
-
-else:
-    st.info("👆 Envanter Excel dosyası yükleyin")
-    
-    st.markdown("""
-    ### 📊 Dashboard Özellikleri
-    
-    **Hiyerarşik Görünüm:**
-    - 🌍 Bölge Toplamları
-    - 👔 SM (Satış Müdürü) Bazlı
-    - 👤 BS (Bölge Sorumlusu) Bazlı
-    - 🏪 Mağaza Bazlı
-    
-    **Risk Skorlama (0-100):**
-    | Kriter | Ağırlık |
-    |--------|---------|
-    | Kayıp Oranı | %30 |
-    | Sigara Açığı | %30 |
-    | İç Hırsızlık | %30 |
-    | Kronik Açık | %5 |
-    | 10TL Ürünleri | %5 |
-    
-    **Karşılaştırma:** Bölge ortalamasına göre
-    """)
+    else:
+        st.info("👆 Envanter Excel dosyası yükleyin")
+        
+        st.markdown("""
+        ### 📊 Dashboard Özellikleri
+        
+        **Hiyerarşik Görünüm:**
+        - 🌍 Bölge Toplamları
+        - 👔 SM (Satış Müdürü) Bazlı
+        - 👤 BS (Bölge Sorumlusu) Bazlı
+        - 🏪 Mağaza Bazlı
+        
+        **Risk Skorlama (0-100):**
+        | Kriter | Ağırlık |
+        |--------|---------|
+        | Kayıp Oranı | %30 |
+        | Sigara Açığı | %30 |
+        | İç Hırsızlık | %30 |
+        | Kronik Açık | %5 |
+        | 10TL Ürünleri | %5 |
+        
+        **Karşılaştırma:** Bölge ortalamasına göre
+        """)
